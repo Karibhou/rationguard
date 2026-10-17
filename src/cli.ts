@@ -5,7 +5,7 @@ import { recordSighting, recordSightingIfEligible, listSightings, AUTO_LEARN_CON
 import { getAllExcuses } from './excuses.js';
 import { CATEGORY_LABELS } from './types.js';
 import type { ExcuseCategory, Excuse } from './types.js';
-import { Watcher } from './watcher.js';
+import { Watcher, isValidSessionName } from './watcher.js';
 import type { WatcherDetection } from './watcher.js';
 import { discoverSessions, attach, type SessionInfo } from '@hivecommons/pluk';
 import { sanitizeForTerminal, stringifyForTerminal } from './sanitize.js';
@@ -376,6 +376,11 @@ async function cmdWatch(positional: string[], flags: Record<string, string>): Pr
     console.error(`${ANSI_RED}Error:${ANSI_RESET} session name is required`);
     console.error('  rationguard watch <session>');
     console.error('  rationguard watch my-agent --cli=claude --rebuttal=send');
+    process.exit(1);
+  }
+
+  if (!isValidSessionName(session)) {
+    console.error(`${ANSI_RED}Error:${ANSI_RESET} invalid session name "${sanitizeForTerminal(session)}" — use only letters, numbers, underscore, and dash`);
     process.exit(1);
   }
 

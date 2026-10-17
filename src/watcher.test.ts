@@ -577,28 +577,26 @@ describe('rebuttal sending', () => {
   it('rejects session names with characters outside [a-zA-Z0-9_-]', () => {
     process.env['PATH'] = `${binDir}:${savedPath}`;
     process.env['RATIONGUARD_PLUK_SEND_BIN'] = fakePlukSend;
-    const { watcher } = makeWatcher({ rebuttal: 'send', session: 'bad;session' });
-    const w = internals(watcher);
-    w.handleEvent(rawOutput('bad;session', 'no work found'));
     assert.throws(
-      () => w.handleEvent(stateChange('bad;session', 'working', 'idle')),
+      () => makeWatcher({ rebuttal: 'send', session: 'bad;session' }),
       /Invalid session name/,
     );
-    watcher.stop();
+    assert.ok(!fs.existsSync(argsFile), 'no rebuttal may be sent');
   });
 
   it('rejects a dotted session name that tmux would read as window.pane', () => {
     process.env['PATH'] = tmuxBinDir;
     process.env['RATIONGUARD_PLUK_SEND_BIN'] = path.join(sandbox, 'no-such-pluk-send');
-    const { watcher } = makeWatcher({ rebuttal: 'send', session: 'agent.0' });
-    const w = internals(watcher);
-    w.handleEvent(rawOutput('agent.0', 'no work found'));
     assert.throws(
-      () => w.handleEvent(stateChange('agent.0', 'working', 'idle')),
+      () => makeWatcher({ rebuttal: 'send', session: 'agent.0' }),
       /Invalid session name/,
     );
-    watcher.stop();
     assert.ok(!fs.existsSync(tmuxArgsFile), 'nothing may be typed into any tmux target');
+  });
+
+  it('allows a dotted session when rebuttals are only logged', () => {
+    const { watcher } = makeWatcher({ rebuttal: 'log', session: 'agent.0' });
+    watcher.stop();
   });
 
   it('logs instead of sending when rebuttal mode is not "send"', () => {

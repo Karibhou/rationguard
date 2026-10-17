@@ -618,6 +618,17 @@ describe('watch and attach argument validation', () => {
     assert.match(stripAnsi(res.stderr), /session name is required/);
   });
 
+  for (const [mode, rebuttal] of [['watch', 'send'], ['subscribe', 'log']]) {
+    it(`watch rejects a dotted session before starting in ${mode} mode`, () => {
+      const res = run(['watch', 'agent.0', `--mode=${mode}`, `--rebuttal=${rebuttal}`]);
+      assert.strictEqual(res.status, 1);
+      assert.match(stripAnsi(res.stderr), /invalid session name "agent\.0"/);
+      assert.doesNotMatch(stripAnsi(res.stdout), /watching agent\.0/);
+      assert.doesNotMatch(stripAnsi(res.stderr), /watching agent\.0/);
+      assert.doesNotMatch(stripAnsi(res.stderr), /at .*node_modules/);
+    });
+  }
+
   it('attach exits 1 without a session name', () => {
     const res = run(['attach']);
     assert.strictEqual(res.status, 1);

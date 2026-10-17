@@ -78,10 +78,8 @@ export function resolvePlukSendBin(): string {
   return 'pluk-send';
 }
 
-function validateSession(session: string): void {
-  if (!SESSION_NAME_RE.test(session)) {
-    throw new Error(`Invalid session name: ${session}`);
-  }
+export function isValidSessionName(session: string): boolean {
+  return SESSION_NAME_RE.test(session);
 }
 
 /**
@@ -99,7 +97,6 @@ function logDeliveryJson(session: string, delivery: 'pluk' | 'tmux' | 'failed'):
 }
 
 function sendRebuttal(session: string, rebuttalRaw: string, verbose = false, json = false): boolean {
-  validateSession(session);
   const rebuttal = sanitizeRebuttal(rebuttalRaw);
   if (!rebuttal) return false;
 
@@ -188,6 +185,9 @@ export class Watcher extends EventEmitter {
 
   constructor(opts: WatcherOptions) {
     super();
+    if (opts.rebuttal === 'send' && !isValidSessionName(opts.session)) {
+      throw new Error(`Invalid session name: ${opts.session}`);
+    }
     this.opts = opts;
     this.excuses = getAllExcuses();
     this.verbose = opts.verbose ?? false;
