@@ -69,7 +69,7 @@ ${ANSI_BOLD}USAGE${ANSI_RESET}
     --diagnostics[=secs]               Periodic bounded health summary on stderr (default 60s)
 
   ${ANSI_CYAN}rationguard prompt${ANSI_RESET}                 Generate a defense table for agent prompts
-  ${ANSI_CYAN}rationguard prompt${ANSI_RESET} --format=yaml   Output as YAML block
+    --format=yaml                      Output format: markdown (default) or yaml
 
   ${ANSI_CYAN}rationguard add${ANSI_RESET}                    Record a new excuse sighting (auto-promotes after 3)
     --excuse="<text>"                  The excuse pattern
@@ -223,6 +223,7 @@ async function cmdCheck(positional: string[], flags: Record<string, string>): Pr
 }
 
 function cmdPrompt(flags: Record<string, string>): void {
+  requireOneOf('format', flags['format'], ['markdown', 'yaml'], 'Valid values');
   // Project-local excuses come from the (potentially untrusted) working
   // directory — a cloned repo must never inject text into a block that is
   // destined for agent instructions. Builtin + user excuses only.
