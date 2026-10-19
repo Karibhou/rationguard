@@ -7,10 +7,11 @@ import { CATEGORY_LABELS } from './types.js';
 import type { ExcuseCategory, Excuse } from './types.js';
 import { Watcher, isValidSessionName } from './watcher.js';
 import type { WatcherDetection } from './watcher.js';
-import { discoverSessions, attach, type SessionInfo } from '@hivecommons/pluk';
+import { discoverSessions, attach, getPatterns, loadPatterns, listAvailableCLIs, bundledPatternsDir, BUILTIN_PATTERNS, type SessionInfo } from '@hivecommons/pluk';
 import { sanitizeForTerminal, stringifyForTerminal } from './sanitize.js';
 import { startDiagnostics } from './diagnostics.js';
 import fs from 'node:fs';
+import path from 'node:path';
 
 const ANSI_RED = '\x1b[31m';
 const ANSI_YELLOW = '\x1b[33m';
@@ -341,6 +342,46 @@ function requireOneOf(flag: string, raw: string | undefined, valid: string[], la
   process.exit(1);
 }
 
+// Only --mode=watch hands --cli/--patterns-dir to pluk, which would otherwise
+// run silently with an all-null pattern set (unknown --cli) or fall back to the
+// bundled patterns (missing --patterns-dir).
+function requireWatchPatterns(cli: string, patternsDir: string | undefined): void {
+  if (patternsDir !== undefined && !fs.existsSync(patternsDir)) {
+    console.error(`${ANSI_RED}Error:${ANSI_RESET} --patterns-dir "${sanitizeForTerminal(patternsDir)}" does not exist.`);
+    process.exit(1);
+  }
+  if (patternsDir !== undefined && !fs.existsSync(path.join(patternsDir, `${cli}.patterns`))) {
+    console.error(`${ANSI_RED}Error:${ANSI_RESET} --patterns-dir "${sanitizeForTerminal(patternsDir)}" has no ${sanitizeForTerminal(cli)}.patterns file.`);
+    process.exit(1);
+  }
+  let set;
+  if (patternsDir !== undefined) {
+    // loadPatterns throws on I/O errors; getPatterns would swallow them and use the bundled set.
+    try {
+      set = loadPatterns(patternsDir, cli);
+    } catch (err) {
+      console.error(`${ANSI_RED}Error:${ANSI_RESET} --patterns-dir "${sanitizeForTerminal(patternsDir)}" ${sanitizeForTerminal(cli)}.patterns cannot be read: ${sanitizeForTerminal(err instanceof Error ? err.message : String(err))}`);
+      process.exit(1);
+    }
+  } else {
+    set = getPatterns(cli);
+  }
+  // Mirrors pluk's unexported hasAnyPattern (src/patterns.ts); parsePatternsContent
+  // never throws, so an all-null set is the only signal that nothing was parsed.
+  for (const v of Object.values(set)) if (v instanceof RegExp) return;
+  if (patternsDir !== undefined) {
+    console.error(`${ANSI_RED}Error:${ANSI_RESET} --patterns-dir "${sanitizeForTerminal(patternsDir)}" ${sanitizeForTerminal(cli)}.patterns defines no patterns.`);
+    process.exit(1);
+  }
+  const known = new Set<string>([
+    ...(patternsDir !== undefined ? listAvailableCLIs(patternsDir) : []),
+    ...listAvailableCLIs(bundledPatternsDir()),
+  ]);
+  if (known.size === 0) for (const c of Object.keys(BUILTIN_PATTERNS)) known.add(c);
+  console.error(`${ANSI_RED}Error:${ANSI_RESET} Unknown --cli "${sanitizeForTerminal(cli)}". Known CLIs: ${[...known].join(', ')}.`);
+  process.exit(1);
+}
+
 function cmdAttach(positional: string[], flags: Record<string, string>): void {
   const session = positional[0];
 
@@ -437,6 +478,8 @@ async function cmdWatch(positional: string[], flags: Record<string, string>): Pr
   const verbose = flags['verbose'] === 'true';
   requireOneOf('log-format', flags['log-format'], ['text', 'json'], 'Valid values');
   const logFormat = (flags['log-format'] ?? 'text') as 'text' | 'json';
+  const cli = flags['cli'] ?? 'claude';
+  if (mode === 'watch') requireWatchPatterns(cli, flags['patterns-dir']);
 
   // In JSON mode stdout carries only JSON Lines, so status text goes to stderr.
   const status = jsonOutput ? console.error : console.log;
@@ -445,7 +488,7 @@ async function cmdWatch(positional: string[], flags: Record<string, string>): Pr
 
   const watcher = new Watcher({
     session,
-    cli: flags['cli'] ?? 'claude',
+    cli,
     runDir: flags['run-dir'],
     patternsDir: flags['patterns-dir'],
     mode,

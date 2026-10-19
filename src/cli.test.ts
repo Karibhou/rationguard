@@ -929,6 +929,54 @@ describe('watch (live subscribe)', () => {
     }
   });
 
+  it('rejects an unknown --cli or missing --patterns-dir with --mode=watch', () => {
+    const bad = run(['watch', 'watch-cli-bad', '--mode=watch', '--cli=cluade']);
+    assert.strictEqual(bad.status, 1);
+    assert.match(stripAnsi(bad.stderr), /Unknown --cli "cluade"\. Known CLIs: .*claude/);
+    assert.ok(!bad.stdout.includes('watching'));
+
+    const missing = run(['watch', 'watch-dir-bad', '--mode=watch', `--patterns-dir=${path.join(sandbox, 'no-such-patterns')}`]);
+    assert.strictEqual(missing.status, 1);
+    assert.match(stripAnsi(missing.stderr), /--patterns-dir ".*no-such-patterns" does not exist\./);
+
+    const emptyDir = path.join(sandbox, 'empty-patterns');
+    fs.mkdirSync(emptyDir, { recursive: true });
+    const noFile = run(['watch', 'watch-dir-empty', '--mode=watch', '--cli=claude', `--patterns-dir=${emptyDir}`]);
+    assert.strictEqual(noFile.status, 1);
+    assert.match(stripAnsi(noFile.stderr), /--patterns-dir ".*empty-patterns" has no claude\.patterns file\./);
+    assert.ok(!noFile.stdout.includes('watching'));
+
+    const blankDir = path.join(sandbox, 'blank-patterns');
+    fs.mkdirSync(blankDir, { recursive: true });
+    fs.writeFileSync(path.join(blankDir, 'claude.patterns'), '# no patterns here\n');
+    const blank = run(['watch', 'watch-dir-blank', '--mode=watch', '--cli=claude', `--patterns-dir=${blankDir}`]);
+    assert.strictEqual(blank.status, 1);
+    assert.match(stripAnsi(blank.stderr), /--patterns-dir ".*blank-patterns" claude\.patterns defines no patterns\./);
+    assert.ok(!/Unknown --cli/.test(blank.stderr));
+    assert.ok(!blank.stdout.includes('watching'));
+
+    const dirAsFile = path.join(sandbox, 'unreadable-patterns');
+    fs.mkdirSync(path.join(dirAsFile, 'claude.patterns'), { recursive: true });
+    const unreadable = run(['watch', 'watch-dir-unreadable', '--mode=watch', '--cli=claude', `--patterns-dir=${dirAsFile}`]);
+    assert.strictEqual(unreadable.status, 1);
+    assert.match(stripAnsi(unreadable.stderr), /--patterns-dir ".*unreadable-patterns" claude\.patterns cannot be read: .*EISDIR/);
+    assert.ok(!unreadable.stdout.includes('watching'));
+  });
+
+  it('does not reject a known --cli with --mode=watch', async () => {
+    const session = 'watch-cli-ok';
+    const { runDir } = makeRunDir('watch-cli-ok-run-dir', session, []);
+    const h = spawnWatch([session, '--mode=watch', '--cli=claude', `--run-dir=${runDir}`]);
+    // Subscribe to 'close' before sleeping: without a tmux session the child
+    // may exit during the wait, and a listener attached afterwards never fires.
+    const exited = waitForExit(h.child);
+    await Promise.race([exited, sleep(1000)]);
+    h.child.kill('SIGINT');
+    await exited;
+    assert.ok(!/Unknown --cli|does not exist/.test(stripAnsi(h.stderr())), h.stderr());
+    assert.ok(h.stdout().includes('watching'), `validation should pass and print the banner: ${h.stdout()} ${h.stderr()}`);
+  });
+
   it('--diagnostics reports live watcher stats on stderr and a final summary on SIGINT', async () => {
     const session = 'watch-diag';
     const { runDir, logFile } = makeRunDir('watch-diag-run-dir', session, []);
