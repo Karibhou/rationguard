@@ -238,6 +238,41 @@ describe('check', () => {
     assert.strictEqual(check('That is (out of scope), sorry.', { excuses: [excuse] }).clean, false);
   });
 
+  it('does not match empty pattern', () => {
+    const excuse = {
+      pattern: '',
+      rebuttal: 'x',
+      category: 'deferral' as const,
+      keywords: [],
+    };
+    // Trailing punctuation gives an empty needle a position with
+    // non-alphanumerics on both sides, which is where it used to match.
+    assert.strictEqual(check('done.', { excuses: [excuse] }).clean, true);
+  });
+
+  it('does not match whitespace-only pattern', () => {
+    const excuse = {
+      pattern: '   ',
+      rebuttal: 'x',
+      category: 'deferral' as const,
+      keywords: [],
+    };
+    assert.strictEqual(check('done.', { excuses: [excuse] }).clean, true);
+  });
+
+  it('still matches empty pattern with a real keyword', () => {
+    const excuse = {
+      pattern: '',
+      rebuttal: 'Later.',
+      category: 'deferral' as const,
+      keywords: ['defer'],
+    };
+    const result = check('I will defer this.', { excuses: [excuse] });
+    assert.strictEqual(result.clean, false);
+    assert.strictEqual(result.matches.length, 1);
+    assert.strictEqual(result.matches[0].matchedText, 'defer');
+  });
+
   it('accepts custom excuse config', () => {
     const result = check('Synergizing the deliverables', {
       excuses: [{
