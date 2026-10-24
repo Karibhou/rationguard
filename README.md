@@ -114,7 +114,9 @@ rationguard watch scanner --rebuttal=send
 elsewhere with `--run-dir=/path/to/pluk/run` or by setting the `PLUK_RUN_DIR`
 environment variable (the flag takes precedence if both are set). Add
 `--verbose` to `watch` to print debug output, and `--patterns-dir=<path>`
-to override pluk's CLI pattern directory. A pluk-send failure that falls
+to override pluk's CLI pattern directory (applies only with `--mode=watch`;
+`--cli` and `--patterns-dir` are ignored, with a warning, in the default
+`--mode=subscribe`). A pluk-send failure that falls
 back to tmux is always logged as one line; add `--log-format=json` to emit
 bounded JSON lines (`event`, `session`, `delivery`, `timestamp`) on stderr
 instead.
@@ -156,7 +158,7 @@ Connect to a pluk event stream and check agent output as it happens.
 
 ```bash
 # Watch a session (subscribe to pluk JSONL log)
-rationguard watch my-agent --cli=claude
+rationguard watch my-agent
 
 # Auto-rebut: send rebuttals back to the agent
 rationguard watch my-agent --rebuttal=send
