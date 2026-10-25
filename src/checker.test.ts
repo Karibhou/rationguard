@@ -8,6 +8,22 @@ describe('check', () => {
     assert.strictEqual(check('The belated release was fine.').clean, true);
   });
 
+  it('counts inflected variants of one keyword as a single hit', () => {
+    for (const input of ['I deferred this', 'Postponed.']) {
+      const match = check(input).matches.find(m => m.excuse?.category === 'deferral');
+      assert.ok(match, input);
+      assert.ok(Math.abs(match.confidence - 0.45) < 1e-9, String(match.confidence));
+    }
+  });
+
+  it('still adds one hit per distinct keyword', () => {
+    const config = { excuses: [{ pattern: 'zzz', category: 'deferral', keywords: ['defer', 'deferred', 'later'], rebuttal: 'r' }] };
+    const one = check('I deferred this', config as never).matches[0].confidence;
+    const two = check('I deferred this for later', config as never).matches[0].confidence;
+    assert.ok(Math.abs(one - 0.45) < 1e-9, String(one));
+    assert.ok(Math.abs(two - 0.6) < 1e-9, String(two));
+  });
+
   it('still matches inflected forms of short keywords', () => {
     assert.strictEqual(check('I deferred it.').clean, false);
     assert.strictEqual(check('We are deferring this to the next cycle.').clean, false);
