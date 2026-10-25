@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { recordSighting, recordSightingIfEligible, loadCustomExcuses, listSightings, withStoreLock, reclaimStaleLock, AUTO_LEARN_CONFIDENCE_THRESHOLD } from './learner.js';
+import { recordSighting, recordSightingIfEligible, loadCustomExcuses, listSightings, withStoreLock, reclaimStaleLock, releaseOwnLock, AUTO_LEARN_CONFIDENCE_THRESHOLD } from './learner.js';
 import { check } from './checker.js';
 import type { Excuse, MatchResult } from './types.js';
 
@@ -281,7 +281,7 @@ describe('store lock', () => {
 
   it('holds the lock (owned by this pid) while fn runs and releases it afterwards', () => {
     const res = withStoreLock(storeDir(), () => {
-      assert.strictEqual(fs.readFileSync(lockPath(), 'utf-8'), String(process.pid));
+      assert.ok(fs.readFileSync(lockPath(), 'utf-8').startsWith(`${process.pid}:`));
       return 42;
     });
     assert.strictEqual(res, 42);
@@ -310,7 +310,7 @@ describe('store lock', () => {
     const holder = spawn(process.execPath, ['-e', 'setTimeout(() => require("fs").rmSync(process.argv[1]), 150)', lockPath()], { stdio: 'ignore' });
     const exited = once(holder, 'exit');
     const owner = withStoreLock(storeDir(), () => fs.readFileSync(lockPath(), 'utf-8'), { maxWaitMs: 10_000 });
-    assert.strictEqual(owner, String(process.pid));
+    assert.ok(owner.startsWith(`${process.pid}:`));
     assert.ok(!fs.existsSync(lockPath()));
     await exited;
   });
@@ -338,13 +338,61 @@ describe('store lock', () => {
     const otherLock = path.join(otherDir, '.sightings.lock');
     withStoreLock(storeDir(), () => {
       withStoreLock(otherDir, () => {
-        assert.strictEqual(fs.readFileSync(otherLock, 'utf-8'), String(process.pid));
-        assert.strictEqual(fs.readFileSync(lockPath(), 'utf-8'), String(process.pid));
+        assert.ok(fs.readFileSync(otherLock, 'utf-8').startsWith(`${process.pid}:`));
+        assert.ok(fs.readFileSync(lockPath(), 'utf-8').startsWith(`${process.pid}:`));
       });
       assert.ok(!fs.existsSync(otherLock), 'inner lock for the other dir must be released');
       assert.ok(fs.existsSync(lockPath()), 'outer lock must survive the inner release');
     });
     assert.ok(!fs.existsSync(lockPath()));
+  });
+
+  it('withStoreLock: does not delete a live lock that replaced ours while fn was stalled', () => {
+    withStoreLock(storeDir(), () => {
+      fs.rmSync(lockPath());
+      fs.writeFileSync(lockPath(), 'reclaimer', { flag: 'wx' });
+    });
+    assert.strictEqual(fs.readFileSync(lockPath(), 'utf-8'), 'reclaimer');
+    assert.deepStrictEqual(fs.readdirSync(storeDir()), ['.sightings.lock']);
+  });
+
+  it('releaseOwnLock: removes the lock when the token matches and leaves no release file', () => {
+    fs.mkdirSync(storeDir(), { recursive: true });
+    fs.writeFileSync(lockPath(), 'mine');
+    releaseOwnLock(lockPath(), 'mine');
+    assert.deepStrictEqual(fs.readdirSync(storeDir()), []);
+  });
+
+  it('releaseOwnLock: returns without throwing when the lock has vanished', () => {
+    fs.mkdirSync(storeDir(), { recursive: true });
+    assert.doesNotThrow(() => releaseOwnLock(lockPath(), 'mine'));
+    assert.deepStrictEqual(fs.readdirSync(storeDir()), []);
+  });
+
+  it('releaseOwnLock: restores a foreign lock and leaves no release file', () => {
+    fs.mkdirSync(storeDir(), { recursive: true });
+    fs.writeFileSync(lockPath(), 'theirs');
+    releaseOwnLock(lockPath(), 'mine');
+    assert.strictEqual(fs.readFileSync(lockPath(), 'utf-8'), 'theirs');
+    assert.ok(!fs.readdirSync(storeDir()).some((f) => f.includes('.release.')));
+  });
+
+  it('releaseOwnLock: drops its release file instead of orphaning it when a foreign lock cannot be put back', () => {
+    fs.mkdirSync(storeDir(), { recursive: true });
+    fs.writeFileSync(lockPath(), 'theirs');
+    const realRename = fs.renameSync;
+    let renames = 0;
+    (fs as { renameSync: typeof fs.renameSync }).renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+      renames += 1;
+      if (renames === 2) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      return realRename(from, to);
+    }) as typeof fs.renameSync;
+    try {
+      releaseOwnLock(lockPath(), 'mine');
+    } finally {
+      (fs as { renameSync: typeof fs.renameSync }).renameSync = realRename;
+    }
+    assert.ok(!fs.readdirSync(storeDir()).some((f) => f.includes('.release.')));
   });
 
   it('reclaimStaleLock: leaves a fresh lock alone and removes a stale one exactly once', () => {
