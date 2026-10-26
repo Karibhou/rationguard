@@ -389,14 +389,14 @@ export function recordSighting(
   rebuttal?: string,
   projectDir?: string,
   opts: RecordSightingOptions = {},
-): { isNew: boolean; count: number; autoPromoted: boolean; excuse: Excuse | null } {
+): { isNew: boolean; count: number; autoPromoted: boolean; promoted: boolean; promotedUpdated: boolean; excuse: Excuse | null } {
   rebuttal = rebuttal?.trim() || undefined;
   const promote = opts.promote ?? true;
   const storePath = getStorePath(projectDir);
   if (!storePath) {
     // No resolvable home directory — refuse to persist rather than writing
     // a "trusted" store into the untrusted working directory.
-    return { isNew: false, count: 0, autoPromoted: false, excuse: null };
+    return { isNew: false, count: 0, autoPromoted: false, promoted: false, promotedUpdated: false, excuse: null };
   }
   return withStoreLock(path.dirname(storePath), () => {
     const store = loadStore(storePath);
@@ -408,14 +408,19 @@ export function recordSighting(
     if (existing) {
       existing.count++;
       existing.lastSeen = now;
-      if (category && category !== existing.suggestedCategory && !rebuttal
+      const categoryChanged = category !== undefined && category !== existing.suggestedCategory;
+      let rebuttalRegenerated = false;
+      if (categoryChanged && !rebuttal
           && existing.suggestedRebuttal === generateRebuttal(existing.suggestedCategory)) {
         existing.suggestedRebuttal = generateRebuttal(category);
+        rebuttalRegenerated = true;
       }
       if (category) existing.suggestedCategory = category;
       if (rebuttal) existing.suggestedRebuttal = rebuttal;
 
+      const alreadyPromoted = existing.promoted;
       let autoPromoted = false;
+      let promotedUpdated = false;
       let excuse: Excuse | null = null;
 
       if (promote && existing.count >= AUTO_ADD_THRESHOLD && !existing.promoted) {
@@ -423,10 +428,19 @@ export function recordSighting(
         autoPromoted = true;
         excuse = promoteToExcuse(existing);
         addToCustomExcuses(excuse, projectDir);
+      } else if (promote && alreadyPromoted && (categoryChanged || rebuttal)) {
+        // Only an explicit `add` may edit the promoted excuse, and only the
+        // fields it actually changed: the detection path (promote: false)
+        // and an unchanged --category must not clobber a hand-edited
+        // rebuttal in custom-excuses.json.
+        const patch: Partial<Pick<Excuse, 'category' | 'rebuttal'>> = {};
+        if (categoryChanged) patch.category = existing.suggestedCategory;
+        if (rebuttal || rebuttalRegenerated) patch.rebuttal = existing.suggestedRebuttal;
+        promotedUpdated = updateCustomExcuse(existing.text.toLowerCase(), patch, projectDir);
       }
 
       saveStore(storePath, store);
-      return { isNew: false, count: existing.count, autoPromoted, excuse };
+      return { isNew: false, count: existing.count, autoPromoted, promoted: existing.promoted, promotedUpdated, excuse };
     }
 
     const guessedCategory = category ?? guessCategory(text);
@@ -443,7 +457,7 @@ export function recordSighting(
     store.sightings.push(sighting);
     saveStore(storePath, store);
 
-    return { isNew: true, count: 1, autoPromoted: false, excuse: null };
+    return { isNew: true, count: 1, autoPromoted: false, promoted: false, promotedUpdated: false, excuse: null };
   });
 }
 
@@ -513,6 +527,37 @@ function addToCustomExcuses(excuse: Excuse, projectDir?: string): void {
     const excuses = loadCustomExcuses(projectDir);
     excuses.push(excuse);
     writeJsonAtomic(filePath, excuses);
+  });
+}
+
+/**
+ * Updates the category/rebuttal of the entry `promoteToExcuse` wrote for this
+ * sighting. Returns whether the file changed; a missing entry (deleted by the
+ * user) is left alone rather than re-added.
+ */
+function updateCustomExcuse(
+  pattern: string,
+  patch: Partial<Pick<Excuse, 'category' | 'rebuttal'>>,
+  projectDir?: string,
+): boolean {
+  const filePath = getCustomExcusesPath(projectDir);
+  if (!filePath) return false;
+  return withStoreLock(path.dirname(filePath), () => {
+    const excuses = loadCustomExcuses(projectDir);
+    const entry = excuses.find(e => e.pattern === pattern);
+    if (!entry) return false;
+    let changed = false;
+    if (patch.category !== undefined && entry.category !== patch.category) {
+      entry.category = patch.category;
+      changed = true;
+    }
+    if (patch.rebuttal !== undefined && entry.rebuttal !== patch.rebuttal) {
+      entry.rebuttal = patch.rebuttal;
+      changed = true;
+    }
+    if (!changed) return false;
+    writeJsonAtomic(filePath, excuses);
+    return true;
   });
 }
 
