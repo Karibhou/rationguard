@@ -390,6 +390,7 @@ export function recordSighting(
   projectDir?: string,
   opts: RecordSightingOptions = {},
 ): { isNew: boolean; count: number; autoPromoted: boolean; excuse: Excuse | null } {
+  rebuttal = rebuttal?.trim() || undefined;
   const promote = opts.promote ?? true;
   const storePath = getStorePath(projectDir);
   if (!storePath) {
@@ -407,6 +408,10 @@ export function recordSighting(
     if (existing) {
       existing.count++;
       existing.lastSeen = now;
+      if (category && category !== existing.suggestedCategory && !rebuttal
+          && existing.suggestedRebuttal === generateRebuttal(existing.suggestedCategory)) {
+        existing.suggestedRebuttal = generateRebuttal(category);
+      }
       if (category) existing.suggestedCategory = category;
       if (rebuttal) existing.suggestedRebuttal = rebuttal;
 
