@@ -307,13 +307,13 @@ A project-local `./.rationguard/custom-excuses.json` is read-only to the CLI and
 ## Programmatic API
 
 ```typescript
-import { check, Watcher, generatePromptBlock } from '@hivecommons/rationguard';
+import { check, Watcher, generatePromptBlock, getAllExcuses } from '@hivecommons/rationguard';
 
 // Check text
 const result = check('Standing by for instructions.');
 if (!result.clean) {
   for (const match of result.matches) {
-    console.log(`${match.excuse.category}: ${match.excuse.rebuttal}`);
+    console.log(`${match.excuse?.category}: ${match.excuse?.rebuttal}`);
   }
 }
 
@@ -330,7 +330,18 @@ await watcher.start();
 
 // Generate prompt block for system prompt injection
 const block = generatePromptBlock();
+
+// Detect against learned and project excuses too
+const full = check('Standing by for instructions.', { excuses: getAllExcuses() });
+
+// Prompt blocks are destined for agent instructions: exclude untrusted
+// project-local excuses, exactly as `rationguard prompt` does
+const fullBlock = generatePromptBlock({
+  excuses: getAllExcuses().filter(e => e.source !== 'project'),
+});
 ```
+
+`check()` and `generatePromptBlock()` called without a config use only the built-in `DEFAULT_EXCUSES`. `getAllExcuses()` returns the same builtin + `~/.rationguard` + project-local set the CLI and `Watcher` use. User and project excuses are tagged `source: 'user'` / `'project'`; builtins carry no `source`. Never feed `source: 'project'` excuses into a prompt block — they come from the (potentially untrusted) working directory and are only ever used for detection.
 
 ---
 
