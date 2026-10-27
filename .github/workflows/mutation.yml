@@ -1,7 +1,10 @@
 # Advisory mutation-testing report (#331). Report-only: the job never fails
 # CI on mutation score (stryker thresholds.break is null) and is not a required
-# check. Nightly runs mutate the whole tree; pull requests mutate only changed
-# src files under a 20-minute budget. Ratchet is a separate, later decision.
+# check. The tree is split into three shards so every nightly shard finishes
+# inside its budget and writes an incremental file on main that pull-request
+# runs restore (#347, #400). Pull requests mutate only the changed src files of
+# each shard under a 20-minute budget; shards with no changed file are skipped.
+# Ratchet is a separate, later decision.
 name: Mutation (advisory)
 
 on:
@@ -25,7 +28,18 @@ jobs:
     continue-on-error: true
     permissions:
       contents: read
-      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: cli
+            files: src/cli.ts
+          - shard: learner
+            files: src/learner.ts
+          - shard: rest
+            files: src/watcher.ts,src/checker.ts,src/defaults.ts,src/sanitize.ts,src/diagnostics.ts,src/types.ts,src/excuses.ts,src/index.ts
+    env:
+      INCREMENTAL_FILE: reports/stryker-incremental/${{ matrix.shard }}.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,43 +55,86 @@ jobs:
       - name: Restore Stryker incremental results
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: reports/stryker-incremental.json
-          key: stryker-incremental-${{ github.sha }}
+          path: reports/stryker-incremental/${{ matrix.shard }}.json
+          key: stryker-incremental-${{ matrix.shard }}-${{ github.sha }}
           restore-keys: |
-            stryker-incremental-
+            stryker-incremental-${{ matrix.shard }}-
 
-      - name: Stryker (pull request, changed files only, 20 min budget)
-        if: github.event_name == 'pull_request'
+      - name: Select files to mutate
+        id: files
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          SHARD: ${{ matrix.shard }}
+          SHARD_FILES: ${{ matrix.files }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            changed=$(git diff --name-only "origin/$BASE_REF...HEAD" -- 'src/*.ts' 'src/**/*.ts' | { grep -v '\.test\.ts$' || true; } | sort -u)
+            files=$(printf '%s\n' "$SHARD_FILES" | tr ',' '\n' | { grep -Fxf <(printf '%s\n' "$changed") || true; } | paste -sd, -)
+          else
+            files="$SHARD_FILES"
+          fi
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          [ -n "$files" ] || echo "No changed src files in shard $SHARD; skipping mutation run."
+
+      - name: Stryker (pull request, changed files in shard, 20 min budget)
+        if: github.event_name == 'pull_request' && steps.files.outputs.files != ''
         timeout-minutes: 20
         continue-on-error: true
-        run: |
-          files=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- 'src/*.ts' 'src/**/*.ts' | grep -v '\.test\.ts$' | sort -u | paste -sd, -)
-          if [ -z "$files" ]; then
-            echo "No changed src files; skipping mutation run."
-            exit 0
-          fi
-          npx stryker run --mutate "$files"
+        env:
+          FILES: ${{ steps.files.outputs.files }}
+        run: npx stryker run --mutate "$FILES" --incrementalFile "$INCREMENTAL_FILE"
 
-      - name: Stryker (nightly, full run, 5 h 30 min budget)
+      - name: Stryker (nightly, whole shard, 5 h 30 min budget)
         if: github.event_name != 'pull_request'
         timeout-minutes: 330
         continue-on-error: true
-        run: npx stryker run
+        env:
+          FILES: ${{ steps.files.outputs.files }}
+        run: npx stryker run --mutate "$FILES" --incrementalFile "$INCREMENTAL_FILE"
 
       - name: Summary
-        if: always()
-        run: npm run --silent test:mutation:summary | tee mutation-summary.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Sticky PR comment
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        continue-on-error: true
+        if: always() && steps.files.outputs.files != ''
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh pr comment "${{ github.event.pull_request.number }}" --body-file mutation-summary.md --edit-last --create-if-none
+          SHARD: ${{ matrix.shard }}
+        run: npm run --silent test:mutation:summary | tee "mutation-summary-$SHARD.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.files.outputs.files != ''
+        with:
+          name: mutation-summary-${{ matrix.shard }}
+          path: mutation-summary-${{ matrix.shard }}.md
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: mutation-report
+          name: mutation-report-${{ matrix.shard }}
           path: reports/mutation
           if-no-files-found: ignore
+
+  # One sticky comment for all shards: three matrix jobs each calling
+  # `gh pr comment --edit-last` would overwrite one another.
+  comment:
+    needs: mutation
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: mutation-summary-*
+          merge-multiple: true
+          path: summaries
+
+      - name: Sticky PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          ls summaries/*.md >/dev/null 2>&1 || { echo "No shard mutated a changed file; nothing to comment."; exit 0; }
+          cat summaries/*.md > mutation-summary.md
+          gh pr comment "$PR_NUMBER" --body-file mutation-summary.md --edit-last --create-if-none

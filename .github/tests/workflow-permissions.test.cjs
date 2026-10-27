@@ -68,7 +68,8 @@ const ALLOWLIST = {
   'mutation.yml': {
     workflow: { contents: 'read' },
     jobs: {
-      mutation: { contents: 'read', 'pull-requests': 'write' },
+      mutation: { contents: 'read' },
+      comment: { contents: 'read', 'pull-requests': 'write' },
     },
   },
   'pr-verifier.yml': {
