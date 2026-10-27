@@ -57,7 +57,9 @@ empty state, which makes the loss permanent unless a copy was kept.
 
    A read-only HOME (e.g. a sandboxed hook or container), an `EACCES` from
    wrong ownership, or a plain file named `.rationguard` all make `check` and
-   `watch` skip recording without any message.
+   `watch` skip recording without any message. (A corrupt store that cannot
+   be moved aside is the exception: that case prints a `could not be moved
+   aside` line on stderr.)
 
 ## Recover
 
@@ -66,7 +68,10 @@ empty state, which makes the loss permanent unless a copy was kept.
 2. If the file was invalid JSON or had the wrong shape, it is preserved
    automatically as `<name>.corrupt-<timestamp>.json` next to the store (a
    line on stderr names the path) and detection continues with an empty store.
-   Repair or merge from that copy.
+   Repair or merge from that copy. If the store directory is not writable the
+   rename fails and stderr instead reports `... could not be moved aside to
+   <path>: <error>`; copy the original file elsewhere before the next write
+   replaces it, then fix permissions (step 5).
 3. If no copy exists, re-add the important excuses with `rationguard add`.
    Sighting counts cannot be reconstructed.
 4. If `HOME` was the cause, correct the environment of the service and restart.

@@ -99,8 +99,11 @@ function preserveCorruptFile(filePath: string): void {
   try {
     fs.renameSync(filePath, corruptPath);
     process.stderr.write(`rationguard: ${filePath} was not valid JSON; preserved as ${corruptPath}\n`);
-  } catch {
-    // Best effort; fall through to an empty store.
+  } catch (err) {
+    // Best effort; fall through to an empty store, but say so: the next write
+    // will replace the unreadable file.
+    const reason = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`rationguard: ${filePath} was not valid JSON and could not be moved aside to ${corruptPath}: ${reason}\n`);
   }
 }
 

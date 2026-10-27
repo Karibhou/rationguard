@@ -819,7 +819,10 @@ describe('corrupt store preservation', () => {
     } finally {
       (fs as { renameSync: typeof fs.renameSync }).renameSync = realRename;
     }
-    assert.strictEqual(stderrLines.length, 0);
+    assert.strictEqual(stderrLines.length, 1);
+    assert.ok(stderrLines[0]!.includes('could not be moved aside'));
+    assert.ok(stderrLines[0]!.includes(path.join(base(), 'sightings.json')));
+    assert.ok(stderrLines[0]!.includes('EACCES'));
     assert.strictEqual(fs.readFileSync(path.join(base(), 'sightings.json'), 'utf-8'), 'garbage');
   });
 });
