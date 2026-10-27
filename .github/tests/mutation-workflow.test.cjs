@@ -3,11 +3,13 @@
 // Contract between .github/workflows/mutation.yml, stryker.config.json and
 // .github/scripts/mutation-summary.cjs. The three files name the same paths
 // and budgets independently and nothing else checks they agree:
-//   1. The cache step's `path` is Stryker's `incrementalFile`, and
-//      `incremental` is on — otherwise the restored cache is never read and
-//      every nightly starts from zero (#347).
-//   2. The cache `key` is per-commit and `restore-keys` fall back to the same
-//      prefix, so a new SHA still restores the previous run's results.
+//   1. The cache step's `path` is the job's INCREMENTAL_FILE, every Stryker
+//      step passes it as `--incrementalFile`, and `incremental` is on —
+//      otherwise the restored cache is never read and every nightly starts
+//      from zero (#347).
+//   2. The cache `key` is per-shard and per-commit, and `restore-keys` fall
+//      back to the same shard's prefix, so a new SHA still restores that
+//      shard's previous results without reading another shard's file.
 //   3. Every step `timeout-minutes` is below the job's, leaving room for the
 //      Summary, sticky comment and artifact upload after a timed-out run.
 //   4. The summary script's default report path lives inside the directory
@@ -15,9 +17,11 @@
 //      report it keeps.
 //   5. Both Stryker output locations are git-ignored, so a local run cannot
 //      commit a report or the incremental file.
+//   6. The shard matrix mutates every non-test src file exactly once, so a
+//      new source file cannot silently drop out of the nightly run (#400).
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
+const { readFileSync, readdirSync } = require('node:fs');
 const { join, dirname, relative, sep } = require('node:path');
 
 const ROOT = join(__dirname, '../..');
@@ -58,10 +62,18 @@ function restoreKeys(text) {
   return m ? m[1].split('\n').map(l => l.trim()).filter(Boolean) : [];
 }
 
+// `- shard: <name>` / `files: <a,b>` pairs from the job's matrix include list.
+function shards(head) {
+  return [...head.matchAll(/^\s*- shard:\s*(\S+)\s*\n\s*files:\s*(\S+)/gm)]
+    .map(m => ({ shard: m[1], files: m[2].split(',') }));
+}
+
 const BODY = jobBody();
+const HEAD = BODY.split('\n    steps:\n')[0];
 const STEPS = steps(BODY);
+const INCREMENTAL_FILE = scalar(HEAD, 'INCREMENTAL_FILE');
 const cacheStep = STEPS.find(s => /uses:\s*actions\/cache@/.test(s));
-const uploadStep = STEPS.find(s => /uses:\s*actions\/upload-artifact@/.test(s));
+const uploadStep = STEPS.find(s => /uses:\s*actions\/upload-artifact@/.test(s) && scalar(s, 'path') === 'reports/mutation');
 const strykerSteps = STEPS.filter(s => /npx stryker run/.test(s));
 const summaryStep = STEPS.find(s => /test:mutation:summary/.test(s));
 
@@ -73,23 +85,28 @@ test('stryker.config.json enables incremental mode with a file under reports/', 
   assert.ok(!STRYKER.incrementalFile.startsWith('/'), 'incrementalFile must be repo-relative');
 });
 
-test('mutation.yml restores the cache at exactly the configured incrementalFile', () => {
+test('mutation.yml restores the cache at exactly the incrementalFile Stryker is given', () => {
   assert.ok(cacheStep, 'mutation job must have an actions/cache step');
-  assert.equal(scalar(cacheStep, 'path'), STRYKER.incrementalFile);
+  assert.ok(INCREMENTAL_FILE, 'mutation job must set INCREMENTAL_FILE');
+  assert.match(INCREMENTAL_FILE, /\$\{\{\s*matrix\.shard\s*\}\}/, 'each shard needs its own incremental file');
+  assert.equal(scalar(cacheStep, 'path'), INCREMENTAL_FILE);
+  assert.ok(strykerSteps.length > 0, 'mutation job must run Stryker');
+  for (const s of strykerSteps) assert.match(s, /--incrementalFile "\$INCREMENTAL_FILE"/, `Stryker step does not read the restored file:\n${s}`);
   assert.ok(STEPS.indexOf(cacheStep) < STEPS.indexOf(strykerSteps[0]), 'cache must be restored before Stryker runs');
 });
 
 // --- 2. per-commit key with a prefix fallback -------------------------------
 
-test('cache key is per-commit and restore-keys fall back to its prefix', () => {
+test('cache key is per-shard and per-commit and restore-keys fall back to the shard prefix', () => {
   const key = scalar(cacheStep, 'key');
   assert.ok(key, 'cache step must declare a key');
-  assert.match(key, /\$\{\{\s*github\.sha\s*\}\}/, 'a fixed key would never save a newer incremental file');
-  const prefix = key.slice(0, key.indexOf('${{'));
-  assert.ok(prefix.length > 0, 'key must have a literal prefix for restore-keys to match');
+  assert.match(key, /\$\{\{\s*github\.sha\s*\}\}$/, 'a fixed key would never save a newer incremental file');
+  assert.match(key, /\$\{\{\s*matrix\.shard\s*\}\}/, 'shards sharing a key would restore one another\'s file');
+  const prefix = key.replace(/\$\{\{\s*github\.sha\s*\}\}$/, '');
+  assert.ok(/^[\w-]+-/.test(prefix), 'key must have a literal prefix for restore-keys to match');
   const fallbacks = restoreKeys(cacheStep);
   assert.ok(fallbacks.length > 0, 'without restore-keys a new commit never sees the previous run');
-  assert.ok(fallbacks.some(k => k === prefix || k === prefix.replace(/-$/, '')), `restore-keys ${JSON.stringify(fallbacks)} must include the key prefix ${JSON.stringify(prefix)}`);
+  assert.ok(fallbacks.includes(prefix), `restore-keys ${JSON.stringify(fallbacks)} must include the shard prefix ${JSON.stringify(prefix)}`);
 });
 
 // --- 3. step budgets sit inside the job budget ------------------------------
@@ -107,7 +124,7 @@ test('every step timeout is below the job timeout so reporting still runs', () =
 test('Stryker steps continue-on-error and the summary runs on always()', () => {
   for (const s of strykerSteps) assert.equal(scalar(s, 'continue-on-error'), 'true', `Stryker step must not fail the job:\n${s}`);
   assert.ok(summaryStep, 'mutation job must run test:mutation:summary');
-  assert.equal(scalar(summaryStep, 'if'), 'always()');
+  assert.match(scalar(summaryStep, 'if'), /^always\(\)/);
   assert.equal(scalar(uploadStep, 'if'), 'always()');
 });
 
@@ -135,7 +152,21 @@ test('.gitignore covers both the incremental file and the report directory', () 
     return rules.includes(p);
   };
   assert.ok(covers(STRYKER.incrementalFile), `${STRYKER.incrementalFile} is not git-ignored`);
+  assert.ok(covers(INCREMENTAL_FILE), `${INCREMENTAL_FILE} is not git-ignored`);
   assert.ok(covers(scalar(uploadStep, 'path')), `${scalar(uploadStep, 'path')} is not git-ignored`);
+});
+
+// --- 6. shards partition the mutated tree -----------------------------------
+
+test('shard matrix mutates every non-test src/*.ts file exactly once', () => {
+  const list = shards(HEAD);
+  assert.ok(list.length > 1, 'mutation job must split the tree into a shard matrix');
+  assert.equal(new Set(list.map(s => s.shard)).size, list.length, 'shard names must be unique');
+  const sources = readdirSync(join(ROOT, 'src')).filter(f => f.endsWith('.ts') && !f.endsWith('.test.ts')).map(f => `src/${f}`).sort();
+  const listed = list.flatMap(s => s.files);
+  for (const f of listed) assert.ok(sources.includes(f), `shard file ${f} is not a non-test src/*.ts file`);
+  assert.equal(new Set(listed).size, listed.length, `a file is listed in two shards: ${listed}`);
+  assert.deepEqual([...listed].sort(), sources, 'every non-test src/*.ts file must belong to a shard');
 });
 
 // --- fixture self-test -------------------------------------------------------
@@ -156,4 +187,21 @@ test('scalar() and restoreKeys() read the shapes mutation.yml uses', () => {
   assert.equal(scalar(step, 'key'), 'pre-${{ github.sha }}');
   assert.deepEqual(restoreKeys(step), ['pre-', 'other-']);
   assert.equal(scalar(step, 'missing'), undefined);
+});
+
+test('shards() reads the matrix include shape mutation.yml uses', () => {
+  const head = [
+    '    strategy:',
+    '      matrix:',
+    '        include:',
+    '          - shard: a',
+    '            files: src/a.ts',
+    '          - shard: b',
+    '            files: src/b.ts,src/c.ts',
+    '    env:',
+  ].join('\n');
+  assert.deepEqual(shards(head), [
+    { shard: 'a', files: ['src/a.ts'] },
+    { shard: 'b', files: ['src/b.ts', 'src/c.ts'] },
+  ]);
 });
