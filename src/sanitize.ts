@@ -31,7 +31,9 @@ function replaceControlStrings(text: string, intro: RegExp, replacement: string)
  * regex chain at the call site.
  *
  * Covers OSC (window-title spoofing, OSC 52 clipboard writes), CSI (cursor
- * movement, screen clear/overwrite), DCS, charset-designation and
+ * movement, screen clear/overwrite), and DCS, SOS, PM and APC control strings,
+ * including their 7-bit ESC and 8-bit C1 forms. Control strings end at BEL,
+ * ST or 8-bit ST. Also covers charset-designation and
  * keypad-mode two-byte ESC forms, nF sequences with intermediate bytes (e.g.
  * ESC # 8, ESC % G, ESC SP F), any other two-byte ESC sequence (e.g.
  * ESC c full reset), and the raw C0/DEL/C1 control-character ranges (with
